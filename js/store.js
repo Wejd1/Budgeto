@@ -142,6 +142,10 @@ export function saveCategory(c) {
   change('upsert', 'Kategorie', [c]);
 }
 
+export function saveCategories(list) {
+  change('upsert', 'Kategorie', list);
+}
+
 export function savePlan(p, isNew) {
   const o = { ...p, zmodyfikowano: now() };
   if (isNew) o.utworzono = o.utworzono || now();

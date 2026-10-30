@@ -15,7 +15,7 @@ import {
   withSkip, nextOccurrence, annualCost, activePlans, addDays, daysUntil,
 } from './planned.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const root = document.getElementById('app');
 const PLACEHOLDER = GOOGLE_CLIENT_ID.startsWith('WKLEJ');
 
@@ -27,6 +27,7 @@ const ui = {
   form: null, // otwarty formularz transakcji
   catForm: null, // otwarty formularz kategorii
   planForm: null, // otwarty formularz wydatku planowanego
+  reorder: null, // tryb zmiany kolejności kategorii: { wydatek: [id…], przychod: [id…] }
   hist: { type: 'all', q: '', cat: '' },
   draft: null, // szkic budżetu
   busy: false,
@@ -42,6 +43,10 @@ const startDay = () => Math.min(28, Math.max(1, Number(state.meta.dzien_startu_o
 const today = () => todayStr();
 const currentKey = () => periodKeyFor(today(), startDay());
 const catMap = () => new Map(state.categories.map((c) => [c.id, c]));
+const byOrder = (a, b) => a.kolejnosc - b.kolejnosc || a.nazwa.localeCompare(b.nazwa, 'pl');
+const catsOfType = (typ) => state.categories.filter((c) => c.typ === typ).sort(byOrder);
+// Kolejność kafelków w formularzu: 'usage' = najczęściej używane najpierw, 'manual' = jak w Ustawieniach (per urządzenie).
+const catOrderMode = () => localStorage.getItem('bud.catOrder') || 'usage';
 const clientId = () => (PLACEHOLDER ? localStorage.getItem('bud.clientId') || '' : GOOGLE_CLIENT_ID);
 const userName = () => (ui.mode === 'demo' ? 'Damian' : getUser()?.name || getUser()?.email || '');
 const period = () => ui.period || currentKey();
@@ -77,6 +82,8 @@ const ICONS = {
   right: '<path d="m9 6 6 6-6 6"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   sync: '<path d="M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3"/><path d="M18 3v4h-4M6 21v-4h4"/>',
+  up: '<path d="m6 15 6-6 6 6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h3"/>',
 };
 const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -723,7 +730,7 @@ function viewBudzet() {
   const avg = suggestBudgets(state.transactions, key, sd, 3);
   const s = getSummary(key);
   const spentNow = new Map(s.cats.map((c) => [c.cat.id, c.spent]));
-  const cats = state.categories.filter((c) => c.typ === 'wydatek' && (c.aktywna || d.limits[c.id]));
+  const cats = catsOfType('wydatek').filter((c) => c.aktywna || d.limits[c.id]);
   const plannedCat = plannedForBudget(key);
 
   return `
@@ -856,7 +863,7 @@ function viewUstawienia() {
   const sheetId = localStorage.getItem('bud.sheetId');
   const u = getUser();
   const sd = startDay();
-  const cats = [...state.categories].sort((a, b) => (a.typ === b.typ ? a.kolejnosc - b.kolejnosc : a.typ === 'wydatek' ? -1 : 1));
+  const cats = [...catsOfType('wydatek'), ...catsOfType('przychod')];
   return `
     <div class="grid-dash">
       <div class="col">
@@ -907,7 +914,8 @@ function viewUstawienia() {
       </div>
       <div class="col">
         <section class="card">
-          <div class="card-head"><h2>Kategorie</h2><button class="small-link" data-act="new-cat">+ Nowa</button></div>
+          ${ui.reorder ? reorderHtml() : `
+          <div class="card-head"><h2>Kategorie</h2><span class="head-links"><button class="small-link" data-act="reorder-start">Zmień kolejność</button><button class="small-link" data-act="new-cat">+ Nowa</button></span></div>
           <div class="cat-admin">
             ${cats.map((c) => `
               <button class="cat-adm-row ${c.aktywna ? '' : 'off'}" data-act="edit-cat" data-id="${esc(c.id)}">
@@ -915,9 +923,40 @@ function viewUstawienia() {
                 <span class="cat-name">${esc(c.nazwa)}</span>
                 <span class="muted small">${c.typ === 'przychod' ? 'przychód' : c.rodzaj === 'staly' ? 'stały' : 'zmienny'}${c.aktywna ? '' : ' · ukryta'}</span>
               </button>`).join('')}
-          </div>
+          </div>`}
         </section>
       </div>
+    </div>`;
+}
+
+function reorderHtml() {
+  const cm = catMap();
+  const group = (typ, title) => {
+    const ids = ui.reorder[typ];
+    return `
+      <h3 class="ro-title">${title}</h3>
+      <div class="ro-list">${ids.map((id, i) => {
+        const c = cm.get(id);
+        return `
+          <div class="ro-row ${c.aktywna ? '' : 'off'}">
+            <span class="cat-ico" style="--c:${esc(c.kolor)}">${c.ikona}</span>
+            <span class="cat-name">${esc(c.nazwa)}${c.aktywna ? '' : ' <em>ukryta</em>'}</span>
+            <button class="icon-btn ro-btn" data-act="ro-move" data-typ="${typ}" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="W górę">${icon('up')}</button>
+            <button class="icon-btn ro-btn" data-act="ro-move" data-typ="${typ}" data-i="${i}" data-d="1" ${i === ids.length - 1 ? 'disabled' : ''} aria-label="W dół">${icon('down')}</button>
+          </div>`;
+      }).join('')}</div>`;
+  };
+  const seg = (v, l) => `<button class="${catOrderMode() === v ? 'on' : ''}" data-act="cat-order-mode" data-v="${v}">${l}</button>`;
+  return `
+    <div class="card-head"><h2>Kolejność kategorii</h2></div>
+    <p class="muted small">Przesuwaj strzałkami. Kolejność zapisuje się w arkuszu, więc obowiązuje na obu telefonach.</p>
+    ${group('wydatek', 'Wydatki')}
+    ${group('przychod', 'Przychody')}
+    <label class="field ro-mode"><span>Kafelki przy dodawaniu wydatku (na tym urządzeniu)</span>
+      <div class="seg small">${seg('manual', 'W tej kolejności')}${seg('usage', 'Najczęstsze najpierw')}</div></label>
+    <div class="btn-row">
+      <button data-act="reorder-cancel">Anuluj</button>
+      <button class="primary" data-act="reorder-save">Zapisz kolejność</button>
     </div>`;
 }
 
@@ -952,7 +991,7 @@ function sortedCats(typ, selected = ui.form?.kategoria_id) {
   for (const t of state.transactions) if (!t.usunieto && t.data >= since) use[t.kategoria_id] = (use[t.kategoria_id] || 0) + 1;
   return state.categories
     .filter((c) => c.typ === typ && (c.aktywna || c.id === selected))
-    .sort((a, b) => (use[b.id] || 0) - (use[a.id] || 0) || a.kolejnosc - b.kolejnosc);
+    .sort((a, b) => (catOrderMode() === 'manual' ? 0 : (use[b.id] || 0) - (use[a.id] || 0)) || byOrder(a, b));
 }
 
 function renderModal() {
@@ -1197,7 +1236,7 @@ const plural = (n, one, few, many) => (n === 1 ? one : n % 10 >= 2 && n % 10 <= 
 function openCatForm(cat = null) {
   ui.catForm = cat
     ? { ...cat, isNew: false }
-    : { id: '', nazwa: '', ikona: '🏷️', kolor: '#5a7d9a', typ: 'wydatek', rodzaj: 'zmienny', domyslna_potrzeba: 'niezbedny', aktywna: true, kolejnosc: state.categories.length + 1, isNew: true };
+    : { id: '', nazwa: '', ikona: '🏷️', kolor: '#5a7d9a', typ: 'wydatek', rodzaj: 'zmienny', domyslna_potrzeba: 'niezbedny', aktywna: true, kolejnosc: Math.max(0, ...state.categories.map((x) => x.kolejnosc || 0)) + 1, isNew: true };
   renderModal();
 }
 
@@ -1460,6 +1499,40 @@ const ACTIONS = {
   },
   csv: (el) => exportCsv(el.dataset.scope),
   'new-cat': () => openCatForm(),
+  'reorder-start': () => {
+    ui.reorder = { wydatek: catsOfType('wydatek').map((c) => c.id), przychod: catsOfType('przychod').map((c) => c.id) };
+    renderApp();
+  },
+  'ro-move': (el) => {
+    const list = ui.reorder[el.dataset.typ];
+    const i = Number(el.dataset.i);
+    const j = i + Number(el.dataset.d);
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    renderApp();
+    // fokus zostaje na tym samym przycisku przesuniętej kategorii — wygodne przy wielu kliknięciach
+    document.querySelector(`[data-act="ro-move"][data-typ="${el.dataset.typ}"][data-i="${j}"][data-d="${el.dataset.d}"]`)?.focus();
+  },
+  'cat-order-mode': (el) => {
+    localStorage.setItem('bud.catOrder', el.dataset.v);
+    renderApp();
+  },
+  'reorder-cancel': () => {
+    ui.reorder = null;
+    renderApp();
+  },
+  'reorder-save': () => {
+    const cm = catMap();
+    const order = [...ui.reorder.wydatek, ...ui.reorder.przychod];
+    const changed = order.map((id, i) => ({ ...cm.get(id), kolejnosc: i + 1 })).filter((c) => cm.get(c.id).kolejnosc !== c.kolejnosc);
+    ui.reorder = null;
+    if (changed.length) {
+      store.saveCategories(changed);
+      state.categories.sort((a, b) => (a.typ === b.typ ? byOrder(a, b) : a.typ === 'wydatek' ? -1 : 1));
+    }
+    renderApp();
+    toast(changed.length ? 'Zapisano kolejność kategorii' : 'Kolejność bez zmian');
+  },
   'edit-cat': (el) => openCatForm(state.categories.find((c) => c.id === el.dataset.id)),
   'c-set': (el) => {
     const c = ui.catForm;

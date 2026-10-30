@@ -7,6 +7,7 @@ Wspólny budżet dla dwojga z naciskiem na **ograniczanie wydatków**. Działa j
 - **Ostrzeżenie *przed* zapisem wydatku.** Gdy wydatek przekroczy limit kategorii albo cały budżet, aplikacja pokazuje to, zanim klikniesz „Zapisz”.
 - **Limity na kategorie** z propozycją ze średniej z 3 miesięcy, kopiowaniem z poprzedniego okresu i bilansem planu (przychody − oszczędności − limity).
 - **Wydatki planowane (zakładka „Planowane”).** Opłaty cykliczne (czynsz, abonamenty, ubezpieczenie: co tydzień, co miesiąc, co kwartał, co rok…) i znane wydatki w przyszłości (przegląd auta, prezent). Niezapłacone terminy rezerwują limit swojej kategorii w danym okresie, więc „zostało” na pulpicie od razu je uwzględnia. Na pulpicie lista „Do zapłaty” z przypomnieniem 3 dni przed terminem, przycisk **Zapłać** (zapisuje wydatek powiązany z terminem) i **Pomiń**, plus zestawienie roczne opłat cyklicznych.
+- **Własna kolejność kategorii** (Ustawienia → Kategorie → Zmień kolejność), wspólna dla obojga. Na każdym urządzeniu można wybrać, czy kafelki przy dodawaniu wydatku idą w tej kolejności, czy od najczęściej używanych.
 - **Podział na niezbędne i zachcianki** oraz raport, ile idzie na zachcianki.
 - **Raporty:** trend 6 okresów, zmiany wobec poprzedniego okresu, struktura wydatków, największe wydatki, kto ile wydał.
 - **Praca offline.** Wydatki dodane bez internetu wysyłają się same, gdy sieć wróci.

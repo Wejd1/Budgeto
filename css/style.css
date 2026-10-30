@@ -388,3 +388,15 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 12px; }
   .tx.occ.full .tx-main { flex: 1 1 calc(100% - 140px); }
   .tx.occ.full .occ-act { width: 100%; justify-content: flex-end; }
 }
+
+/* ───── kolejność kategorii ───── */
+.head-links { display: flex; gap: 14px; }
+.ro-title { font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 2px; font-weight: 650; }
+.ro-list { display: grid; }
+.ro-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.ro-row:last-child { border-bottom: none; }
+.ro-row .cat-name { flex: 1; min-width: 0; }
+.ro-row.off { opacity: .55; }
+.ro-btn { border: 1px solid var(--line); background: var(--soft); width: 40px; height: 38px; justify-content: center; }
+.ro-btn:disabled { opacity: .3; }
+.ro-mode { margin-top: 14px; }
