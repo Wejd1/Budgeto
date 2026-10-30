@@ -22,8 +22,16 @@ globalThis.fetch = async (url, opts = {}) => {
   calls.push(`${opts.method} ${u.replace('https://sheets.googleapis.com/v4/spreadsheets/', '')}`);
   const body = opts.body ? JSON.parse(opts.body) : null;
   const ok = (j) => ({ ok: true, status: 200, json: async () => j });
+  if (u.endsWith('?fields=sheets.properties.title')) {
+    return ok({ sheets: Object.keys(sheets).map((title) => ({ properties: { title } })) });
+  }
+  if (u.endsWith(':batchUpdate') && !u.includes('values:')) {
+    for (const r of body.requests) if (r.addSheet) sheets[r.addSheet.properties.title] = [[]];
+    return ok({});
+  }
   if (u.includes('values:batchGet')) {
-    return ok({ valueRanges: Object.keys(sheets).map((t) => ({ values: sheets[t].slice(1) })) });
+    const ranges = [...u.matchAll(/ranges=(\w+)!/g)].map((m) => m[1]);
+    return ok({ valueRanges: ranges.map((t) => ({ values: (sheets[t] || []).slice(1) })) });
   }
   if (u.includes(':append')) {
     const t = u.match(/values\/(\w+)!/)[1];
@@ -54,7 +62,7 @@ test('loadAll normalizuje dane wpisane ręcznie w arkuszu', async () => {
     { data: '2026-10-01', kwota: 30.5, typ: 'przychod' },
   );
   assert.equal(d.categories[0].aktywna, true);
-  assert.equal(d.meta.wersja_schematu, 1);
+  assert.equal(d.meta.wersja_schematu, 2); // podniesiona przez migrację
 });
 
 test('upsert aktualizuje istniejący wiersz, a nowy dopisuje', async () => {
@@ -67,4 +75,16 @@ test('upsert aktualizuje istniejący wiersz, a nowy dopisuje', async () => {
   assert.equal(sheets.Budzety.length, 3);
   await b.apply({ kind: 'append', sheet: 'Transakcje', objs: [{ id: 'a3', data: '2026-10-05', kwota: 7, typ: 'wydatek', kategoria_id: 'jedzenie' }] });
   assert.equal(sheets.Transakcje.length, 4);
+});
+
+test('arkusz ze starszej wersji dostaje zakładkę Planowane i nowe nagłówki', async () => {
+  assert.equal(sheets.Planowane[0][0], 'id');
+  assert.equal(sheets.Transakcje[0][11], 'plan_id');
+  assert.ok(sheets.Meta.some((r) => r[0] === 'wersja_schematu' && r[1] === 2));
+  const b = new SheetsBackend('X');
+  await b.apply({ kind: 'append', sheet: 'Planowane', objs: [{ id: 'p1', nazwa: 'Czynsz', kwota: 2300, kategoria_id: 'mieszkanie', cykl: 'miesiac', data: '2026-11-01' }] });
+  const d = await b.loadAll();
+  assert.equal(d.plans.length, 1);
+  assert.deepEqual({ cykl: d.plans[0].cykl, kwota: d.plans[0].kwota, usunieto: d.plans[0].usunieto }, { cykl: 'miesiac', kwota: 2300, usunieto: false });
+  assert.equal(d.transactions[0].plan_id, '');
 });

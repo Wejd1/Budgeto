@@ -1,17 +1,21 @@
 // Układ arkusza. Kolejność kolumn ma znaczenie — NIE przestawiaj kolumn w arkuszu ręcznie.
 // Nowe kolumny dopisuj zawsze na końcu i podbij SCHEMA_VERSION.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA = {
-  Transakcje: ['id', 'data', 'kwota', 'typ', 'kategoria_id', 'opis', 'potrzeba', 'osoba', 'utworzono', 'zmodyfikowano', 'usunieto'],
+  // plan_id/plan_data (od wersji 2): transakcja opłaca termin wydatku planowanego.
+  Transakcje: ['id', 'data', 'kwota', 'typ', 'kategoria_id', 'opis', 'potrzeba', 'osoba', 'utworzono', 'zmodyfikowano', 'usunieto', 'plan_id', 'plan_data'],
   Kategorie: ['id', 'nazwa', 'ikona', 'kolor', 'typ', 'rodzaj', 'domyslna_potrzeba', 'aktywna', 'kolejnosc'],
   Budzety: ['okres', 'kategoria_id', 'limit', 'zmodyfikowano'],
   Okresy: ['okres', 'przychody_plan', 'cel_oszczednosci', 'zmodyfikowano'],
   Meta: ['klucz', 'wartosc'],
+  // Wydatki planowane (od wersji 2). cykl: jednorazowo | tydzien | 2tygodnie | miesiac | 2miesiace | kwartal | polrocze | rok.
+  // data = pierwszy termin (dla jednorazowych: termin), pominiete = daty pominiętych terminów po przecinku.
+  Planowane: ['id', 'nazwa', 'kwota', 'kategoria_id', 'potrzeba', 'cykl', 'data', 'data_koniec', 'pominiete', 'osoba', 'utworzono', 'zmodyfikowano', 'usunieto'],
 };
 
 // Ile pierwszych kolumn tworzy klucz wiersza (do aktualizacji „w miejscu”).
-export const KEY_COLS = { Transakcje: 1, Kategorie: 1, Budzety: 2, Okresy: 1, Meta: 1 };
+export const KEY_COLS = { Transakcje: 1, Kategorie: 1, Budzety: 2, Okresy: 1, Meta: 1, Planowane: 1 };
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -63,6 +67,8 @@ const NORMALIZERS = {
     opis: String(o.opis ?? ''),
     osoba: String(o.osoba ?? ''),
     usunieto: truthy(o.usunieto),
+    plan_id: String(o.plan_id ?? ''),
+    plan_data: o.plan_data === '' || o.plan_data === undefined ? '' : normDate(o.plan_data),
   }),
   Kategorie: (o) => ({
     ...o,
@@ -78,6 +84,20 @@ const NORMALIZERS = {
   Budzety: (o) => ({ ...o, okres: normPeriod(o.okres), kategoria_id: String(o.kategoria_id), limit: normNum(o.limit) }),
   Okresy: (o) => ({ ...o, okres: normPeriod(o.okres), przychody_plan: normNum(o.przychody_plan), cel_oszczednosci: normNum(o.cel_oszczednosci) }),
   Meta: (o) => ({ klucz: String(o.klucz), wartosc: o.wartosc }),
+  Planowane: (o) => ({
+    ...o,
+    id: String(o.id),
+    nazwa: String(o.nazwa ?? ''),
+    kwota: normNum(o.kwota),
+    kategoria_id: String(o.kategoria_id ?? ''),
+    potrzeba: stripAccents(o.potrzeba) === 'zachcianka' ? 'zachcianka' : 'niezbedny',
+    cykl: String(o.cykl || 'jednorazowo').trim(),
+    data: normDate(o.data),
+    data_koniec: o.data_koniec === '' || o.data_koniec === undefined ? '' : normDate(o.data_koniec),
+    pominiete: String(o.pominiete ?? '').split(',').map((d) => normDate(d.trim())).filter(Boolean).join(','),
+    osoba: String(o.osoba ?? ''),
+    usunieto: truthy(o.usunieto),
+  }),
 };
 
 export function rowToObj(sheet, row) {
@@ -112,6 +132,7 @@ export function buildData(rowsBySheet) {
     categories: out.Kategorie.sort((a, b) => a.kolejnosc - b.kolejnosc),
     budgets: out.Budzety,
     periods: out.Okresy,
+    plans: out.Planowane,
     meta,
   };
 }

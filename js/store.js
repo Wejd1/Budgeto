@@ -4,13 +4,14 @@
 import { keyOf } from './schema.js';
 import { AuthError } from './auth.js';
 
-const LIST_OF = { Transakcje: 'transactions', Kategorie: 'categories', Budzety: 'budgets', Okresy: 'periods' };
+const LIST_OF = { Transakcje: 'transactions', Kategorie: 'categories', Budzety: 'budgets', Okresy: 'periods', Planowane: 'plans' };
 
 export const state = {
   transactions: [],
   categories: [],
   budgets: [],
   periods: [],
+  plans: [],
   meta: {},
   hasData: false,
   sync: { status: 'idle', message: '', lastSync: null, pending: 0 },
@@ -38,7 +39,7 @@ function persist() {
   try {
     localStorage.setItem(`bud.cache.${lsKey}`, JSON.stringify({
       transactions: state.transactions, categories: state.categories, budgets: state.budgets,
-      periods: state.periods, meta: state.meta, lastSync: state.sync.lastSync,
+      periods: state.periods, plans: state.plans, meta: state.meta, lastSync: state.sync.lastSync,
     }));
     localStorage.setItem(`bud.outbox.${lsKey}`, JSON.stringify(outbox));
   } catch (e) {
@@ -50,14 +51,14 @@ export function useBackend(b) {
   backend = b;
   lsKey = b.id;
   outbox = [];
-  Object.assign(state, { transactions: [], categories: [], budgets: [], periods: [], meta: {}, hasData: false });
+  Object.assign(state, { transactions: [], categories: [], budgets: [], periods: [], plans: [], meta: {}, hasData: false });
   state.sync = { status: 'idle', message: '', lastSync: null, pending: 0 };
   try {
     const c = JSON.parse(localStorage.getItem(`bud.cache.${lsKey}`));
     if (c) {
       Object.assign(state, {
         transactions: c.transactions || [], categories: c.categories || [], budgets: c.budgets || [],
-        periods: c.periods || [], meta: c.meta || {}, hasData: true,
+        periods: c.periods || [], plans: c.plans || [], meta: c.meta || {}, hasData: true,
       });
       state.sync.lastSync = c.lastSync || null;
     }
@@ -139,6 +140,20 @@ export function savePeriod(p) {
 
 export function saveCategory(c) {
   change('upsert', 'Kategorie', [c]);
+}
+
+export function savePlan(p, isNew) {
+  const o = { ...p, zmodyfikowano: now() };
+  if (isNew) o.utworzono = o.utworzono || now();
+  change(isNew ? 'append' : 'upsert', 'Planowane', [o]);
+}
+
+export function deletePlan(p) {
+  change('upsert', 'Planowane', [{ ...p, usunieto: true, zmodyfikowano: now() }]);
+}
+
+export function restorePlan(p) {
+  change('upsert', 'Planowane', [{ ...p, usunieto: false, zmodyfikowano: now() }]);
 }
 
 export function setMeta(klucz, wartosc) {

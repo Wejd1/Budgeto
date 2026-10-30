@@ -6,6 +6,7 @@ Wspólny budżet dla dwojga z naciskiem na **ograniczanie wydatków**. Działa j
 - **Pulpit „ile zostało”.** Kwota do wydania, bezpieczny limit na dziś, prognoza na koniec okresu i tempo wydawania w porównaniu z upływem miesiąca.
 - **Ostrzeżenie *przed* zapisem wydatku.** Gdy wydatek przekroczy limit kategorii albo cały budżet, aplikacja pokazuje to, zanim klikniesz „Zapisz”.
 - **Limity na kategorie** z propozycją ze średniej z 3 miesięcy, kopiowaniem z poprzedniego okresu i bilansem planu (przychody − oszczędności − limity).
+- **Wydatki planowane (zakładka „Planowane”).** Opłaty cykliczne (czynsz, abonamenty, ubezpieczenie: co tydzień, co miesiąc, co kwartał, co rok…) i znane wydatki w przyszłości (przegląd auta, prezent). Niezapłacone terminy rezerwują limit swojej kategorii w danym okresie, więc „zostało” na pulpicie od razu je uwzględnia. Na pulpicie lista „Do zapłaty” z przypomnieniem 3 dni przed terminem, przycisk **Zapłać** (zapisuje wydatek powiązany z terminem) i **Pomiń**, plus zestawienie roczne opłat cyklicznych.
 - **Podział na niezbędne i zachcianki** oraz raport, ile idzie na zachcianki.
 - **Raporty:** trend 6 okresów, zmiany wobec poprzedniego okresu, struktura wydatków, największe wydatki, kto ile wydał.
 - **Praca offline.** Wydatki dodane bez internetu wysyłają się same, gdy sieć wróci.
@@ -110,7 +111,9 @@ Na PC w Chrome lub Edge możesz ją zainstalować tak samo (ikona instalacji w p
 - ❌ **Nie sortować i nie usuwać wierszy** w zakładkach danych. Do usuwania służy aplikacja: wiersz dostaje wtedy znacznik w kolumnie `usunieto` i znika z widoków.
 - ❌ Nie przestawiać kolumn.
 
-Arkusz ma zakładki: `Transakcje`, `Kategorie`, `Budzety` (limit na kategorię na okres), `Okresy` (planowane przychody, cel oszczędności) i `Meta` (ustawienia wspólne, np. dzień startu okresu).
+Arkusz ma zakładki: `Transakcje`, `Kategorie`, `Budzety` (limit na kategorię na okres), `Okresy` (planowane przychody, cel oszczędności), `Planowane` (wydatki cykliczne i przyszłe) i `Meta` (ustawienia wspólne, np. dzień startu okresu).
+
+Arkusz założony starszą wersją aplikacji sam dostanie zakładkę `Planowane` i kolumny `plan_id`, `plan_data` w `Transakcje` przy pierwszym uruchomieniu nowej wersji. Istniejące dane zostają nietknięte.
 
 ## Wprowadzanie zmian w kodzie
 
@@ -122,6 +125,7 @@ Arkusz ma zakładki: `Transakcje`, `Kategorie`, `Budzety` (limit na kategorię n
 |---|---|
 | `js/config.js` | Client ID Google — jedyne miejsce do uzupełnienia |
 | `js/budget.js` | obliczenia: okresy, „zostało”, limit dzienny, tempo, prognoza, propozycje limitów |
+| `js/planned.js` | wydatki planowane: cykle, terminy, statusy (zapłacony / pominięty / po terminie), koszt roczny |
 | `js/app.js` | interfejs: pulpit, dodawanie, historia, budżet, raporty, ustawienia |
 | `js/store.js` | stan, pamięć podręczna, kolejka offline, synchronizacja |
 | `js/sheets.js` | komunikacja z Google Sheets API |
@@ -133,7 +137,6 @@ Arkusz ma zakładki: `Transakcje`, `Kategorie`, `Budzety` (limit na kategorię n
 
 ## Pomysły na kolejne etapy
 
-- Wydatki cykliczne (czynsz, abonamenty) z przypomnieniem i zestawieniem rocznym.
 - Import wyciągów CSV z banku z automatycznym przypisaniem kategorii.
 - Cele oszczędnościowe długoterminowe z paskiem postępu.
 

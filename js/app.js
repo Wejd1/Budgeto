@@ -10,8 +10,12 @@ import {
   periodTotals, compareWithPrevious, txInPeriod, parseAmount, round2, inRange,
 } from './budget.js';
 import { zl, zlShort, periodLabel, periodShort, dateLong, dateShort, pct, days, esc } from './format.js';
+import {
+  CYCLES, cycleLabel, isRecurring, periodOccurrences, occurrencesInRange, occurrencesBetween, isPending, occKey,
+  withSkip, nextOccurrence, annualCost, activePlans, addDays, daysUntil,
+} from './planned.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const root = document.getElementById('app');
 const PLACEHOLDER = GOOGLE_CLIENT_ID.startsWith('WKLEJ');
 
@@ -22,6 +26,7 @@ const ui = {
   period: null,
   form: null, // otwarty formularz transakcji
   catForm: null, // otwarty formularz kategorii
+  planForm: null, // otwarty formularz wydatku planowanego
   hist: { type: 'all', q: '', cat: '' },
   draft: null, // szkic budżetu
   busy: false,
@@ -41,9 +46,17 @@ const clientId = () => (PLACEHOLDER ? localStorage.getItem('bud.clientId') || ''
 const userName = () => (ui.mode === 'demo' ? 'Damian' : getUser()?.name || getUser()?.email || '');
 const period = () => ui.period || currentKey();
 
-function getSummary(key = period(), excludeId = null) {
+/** Niezapłacone i niepominięte terminy planów w okresie — rezerwują limity. */
+function pendingPlanned(key, txs = state.transactions, { excludeOcc = null, excludePlanId = null } = {}) {
+  const plans = excludePlanId ? state.plans.filter((p) => p.id !== excludePlanId) : state.plans;
+  return periodOccurrences(plans, txs, key, startDay(), today()).filter((o) => isPending(o) && o.key !== excludeOcc);
+}
+
+function getSummary(key = period(), { excludeTxId = null, excludeOcc = null, excludePlanId = null } = {}) {
+  const txs = excludeTxId ? state.transactions.filter((t) => t.id !== excludeTxId) : state.transactions;
   return summarize({
-    transactions: excludeId ? state.transactions.filter((t) => t.id !== excludeId) : state.transactions,
+    transactions: txs,
+    planned: pendingPlanned(key, txs, { excludeOcc, excludePlanId }),
     budgets: state.budgets,
     periods: state.periods,
     categories: state.categories,
@@ -64,12 +77,15 @@ const ICONS = {
   right: '<path d="m9 6 6 6-6 6"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   sync: '<path d="M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3"/><path d="M18 3v4h-4M6 21v-4h4"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h3"/>',
 };
 const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
-function bar(frac, status, tick = null) {
+/** Pasek postępu; plannedFrac = część zarezerwowana na zaplanowane płatności (kreskowana). */
+function bar(frac, status, tick = null, plannedFrac = 0) {
   const w = Math.max(0, Math.min(100, (frac || 0) * 100));
-  return `<div class="bar s-${status}"><i style="width:${w}%"></i>${tick !== null && tick > 0 && tick < 1 ? `<b style="left:${tick * 100}%" title="dzisiaj"></b>` : ''}</div>`;
+  const pw = Math.max(0, Math.min(100 - w, (plannedFrac || 0) * 100));
+  return `<div class="bar s-${status}"><i style="width:${w}%"></i>${pw > 0 ? `<i class="pl" style="left:${w}%;width:${pw}%"></i>` : ''}${tick !== null && tick > 0 && tick < 1 ? `<b style="left:${tick * 100}%" title="dzisiaj"></b>` : ''}</div>`;
 }
 
 function toast(msg, action = null) {
@@ -172,7 +188,7 @@ function onRoute() {
     render();
     return openForm();
   }
-  ui.view = ['pulpit', 'historia', 'budzet', 'raporty', 'ustawienia'].includes(v) ? v : 'pulpit';
+  ui.view = ['pulpit', 'historia', 'planowane', 'budzet', 'raporty', 'ustawienia'].includes(v) ? v : 'pulpit';
   if (ui.phase === 'app') render();
   window.scrollTo(0, 0);
 }
@@ -187,6 +203,7 @@ function onStoreChange() {
   }
   renderApp();
   if (ui.form) updateImpact();
+  if (ui.planForm) updatePlanPreview();
 }
 
 // ───────────────────────── renderowanie ─────────────────────────
@@ -221,7 +238,7 @@ function renderHeader() {
   else if (pending) pill = `<span class="pill s-warn">Czeka: ${pending}</span>`;
   else pill = `<span class="pill s-ok">✓ ${ui.mode === 'demo' ? 'Demo' : 'Aktualne'}</span>`;
 
-  const showPeriod = ['pulpit', 'historia', 'budzet', 'raporty'].includes(ui.view);
+  const showPeriod = ['pulpit', 'historia', 'planowane', 'budzet', 'raporty'].includes(ui.view);
   const isCurrent = period() === currentKey();
   $('#top').innerHTML = `
     <div class="top-in">
@@ -252,6 +269,7 @@ function renderNav() {
     ${item('pulpit', 'home', 'Pulpit')}
     ${item('historia', 'list', 'Historia')}
     <button class="fab" data-act="add" aria-label="Dodaj wydatek">${icon('plus')}<span>Dodaj</span></button>
+    ${item('planowane', 'calendar', 'Planowane')}
     ${item('budzet', 'target', 'Budżet')}
     ${item('raporty', 'chart', 'Raporty')}
   </div>`;
@@ -320,7 +338,7 @@ function viewPulpit() {
     hero = `
       <section class="card hero s-none">
         <div class="hero-label">Nie ustalono budżetu na ten okres</div>
-        <p class="muted">Wydano dotąd <b>${zl(s.spent)}</b>. Ustal limity na kategorie, a aplikacja pokaże, ile możecie jeszcze wydać — każdego dnia.</p>
+        <p class="muted">Wydano dotąd <b>${zl(s.spent)}</b>${s.planned ? `, zaplanowano <b>${zl(s.planned)}</b>` : ''}. Ustal limity na kategorie, a aplikacja pokaże, ile możecie jeszcze wydać — każdego dnia.</p>
         <a class="primary" href="#/budzet">Ustal budżet</a>
       </section>`;
   } else {
@@ -330,8 +348,8 @@ function viewPulpit() {
       <section class="card hero s-${st}">
         <div class="hero-label">${label}</div>
         <div class="hero-amount">${zl(Math.abs(s.remaining))}</div>
-        <div class="hero-sub">wydano ${zl(s.spent)} z ${zl(s.totalLimit)}</div>
-        ${bar(s.spentFrac, st, tick)}
+        <div class="hero-sub">wydano ${zl(s.spent)}${s.planned ? ` + zaplanowano <a href="#/planowane">${zl(s.planned)}</a>` : ''} z ${zl(s.totalLimit)}</div>
+        ${bar(s.spentFrac, st, tick, s.plannedFrac)}
         ${s.state === 'current' ? `<div class="hero-foot"><span>Minęło ${pct(s.elapsedFrac)} okresu</span><span>wydano ${pct(s.spentFrac)} budżetu</span></div>` : ''}
       </section>`;
   }
@@ -344,7 +362,7 @@ function viewPulpit() {
       <div class="tile ${s.remaining <= 0 ? 's-over' : ''}">
         <div class="tile-label">Na dziś bezpiecznie</div>
         <div class="tile-val">${zl(s.dailySafe)}</div>
-        <div class="tile-sub">dziennie przez ${days(s.daysLeft)}</div>
+        <div class="tile-sub">dziennie przez ${days(s.daysLeft)}${s.planned ? ' · po odłożeniu na planowane' : ''}</div>
       </div>` : ''}
       ${s.forecast !== null ? `
       <div class="tile ${over > 0 ? 's-over' : 's-ok'}">
@@ -363,13 +381,21 @@ function viewPulpit() {
   // Alerty: najpierw przekroczenia, potem tempo
   const alerts = [];
   for (const c of s.cats) {
-    if (c.status === 'over') alerts.push(`<div class="alert s-over"><b>${c.cat.ikona} ${esc(c.cat.nazwa)}</b>: limit przekroczony o ${zl(-c.remaining)}</div>`);
+    if (c.status === 'over') {
+      alerts.push(c.overByPlan
+        ? `<div class="alert s-over"><b>${c.cat.ikona} ${esc(c.cat.nazwa)}</b>: razem z zaplanowanymi płatnościami limit zostanie przekroczony o ${zl(-c.remaining)}</div>`
+        : `<div class="alert s-over"><b>${c.cat.ikona} ${esc(c.cat.nazwa)}</b>: limit przekroczony o ${zl(-c.remaining)}</div>`);
+    }
   }
   for (const c of s.cats) {
     if (c.paceWarn) alerts.push(`<div class="alert s-warn"><b>${c.cat.ikona} ${esc(c.cat.nazwa)}</b>: wydano już ${pct(c.pct)} limitu, a minęło ${pct(s.elapsedFrac)} okresu — zwolnijcie.</div>`);
   }
-  if (s.totalLimit && s.unbudgetedSpent > 0) {
-    alerts.push(`<div class="alert s-warn">Wydatki bez limitu: <b>${zl(s.unbudgetedSpent)}</b> — też zmniejszają kwotę „zostało”. <a href="#/budzet">Dodaj limity</a></div>`);
+  if (s.totalLimit && s.unbudgetedSpent + s.unbudgetedPlanned > 0) {
+    alerts.push(`<div class="alert s-warn">Wydatki${s.unbudgetedPlanned ? ' (i planowane)' : ''} bez limitu: <b>${zl(s.unbudgetedSpent + s.unbudgetedPlanned)}</b> — też zmniejszają kwotę „zostało”. <a href="#/budzet">Dodaj limity</a></div>`);
+  }
+  const overdue = s.state === 'current' ? pendingPlanned(period()).filter((o) => o.status === 'overdue') : [];
+  if (overdue.length) {
+    alerts.unshift(`<div class="alert s-over">${overdue.length === 1 ? `Płatność „${esc(overdue[0].plan.nazwa)}” jest po terminie` : `${overdue.length} planowane płatności są po terminie`} (${zl(overdue.reduce((a, o) => a + o.amount, 0))}). <a href="#/planowane">Zobacz</a></div>`);
   }
 
   const rows = s.cats.map((c) => {
@@ -382,8 +408,8 @@ function viewPulpit() {
         <span class="cat-ico" style="--c:${esc(c.cat.kolor || '#888')}">${c.cat.ikona}</span>
         <span class="cat-main">
           <span class="cat-name">${esc(c.cat.nazwa)}${c.cat.rodzaj === 'staly' ? ' <em>stały</em>' : ''}</span>
-          ${c.limit ? bar(c.pct, c.paceWarn ? 'warn' : c.status, c.cat.rodzaj === 'staly' ? null : tick) : bar(1, 'nolimit')}
-          <span class="cat-nums">${zl(c.spent)}${c.limit ? ` z ${zl(c.limit)} · ${pct(c.pct)}` : ''}</span>
+          ${c.limit ? bar(c.pct, c.paceWarn ? 'warn' : c.status, c.cat.rodzaj === 'staly' ? null : tick, c.plannedPct) : bar(1, 'nolimit')}
+          <span class="cat-nums">${zl(c.spent)}${c.planned ? ` + plan ${zl(c.planned)}` : ''}${c.limit ? ` z ${zl(c.limit)} · ${pct((c.spent + c.planned) / c.limit)}` : ''}</span>
         </span>
         <span class="cat-rest">${rest}</span>
       </button>`;
@@ -399,6 +425,7 @@ function viewPulpit() {
         ${hero}
         ${tiles}
         ${alerts.length ? `<div class="alerts">${alerts.join('')}</div>` : ''}
+        ${plannedCard(cm)}
       </div>
       <div class="col">
         <section class="card">
@@ -421,11 +448,150 @@ function txRow(t, cm, showDate = true) {
     <button class="tx" data-act="edit-tx" data-id="${esc(t.id)}">
       <span class="cat-ico" style="--c:${esc(c.kolor)}">${c.ikona}</span>
       <span class="tx-main">
-        <span class="tx-title">${esc(t.opis || c.nazwa)}${t.potrzeba === 'zachcianka' && !inc ? '<em class="want">zachcianka</em>' : ''}</span>
+        <span class="tx-title">${esc(t.opis || c.nazwa)}${t.plan_id ? '<em class="plan-tag">plan</em>' : ''}${t.potrzeba === 'zachcianka' && !inc ? '<em class="want">zachcianka</em>' : ''}</span>
         <span class="tx-meta">${meta}</span>
       </span>
       <span class="tx-amt ${inc ? 'inc' : ''}">${inc ? '+' : '−'}${zl(t.kwota)}</span>
     </button>`;
+}
+
+// ───────────────────────── PLANOWANE ─────────────────────────
+
+/** Terminy do zapłaty: niezapłacone w okresie + (dla bieżącego okresu) przypomnienia na 3 dni naprzód. */
+function upcomingOccurrences() {
+  const key = period();
+  const td = today();
+  const list = periodOccurrences(state.plans, state.transactions, key, startDay(), td).filter(isPending);
+  if (key === currentKey()) {
+    const r = periodRange(key, startDay());
+    list.push(...occurrencesInRange(state.plans, state.transactions, addDays(r.end, 1), addDays(td, 3), td).filter(isPending));
+  }
+  return list;
+}
+
+function whenLabel(o) {
+  if (o.status === 'paid') return { txt: `zapłacono ${zl(o.tx.kwota)} · ${dateShort(o.tx.data)}`, cls: 't-ok' };
+  if (o.status === 'skipped') return { txt: `pominięto · ${dateShort(o.date)}`, cls: '' };
+  const d = daysUntil(o.date, today());
+  if (d < 0) return { txt: `po terminie · ${dateShort(o.date)}`, cls: 't-over' };
+  if (d === 0) return { txt: 'dzisiaj', cls: 't-warn' };
+  if (d === 1) return { txt: 'jutro', cls: 't-warn' };
+  if (d <= 3) return { txt: `za ${d} dni · ${dateShort(o.date)}`, cls: 't-warn' };
+  return { txt: dateShort(o.date), cls: '' };
+}
+
+function occRow(o, cm, full = false) {
+  const c = cm.get(o.kategoria_id) || { nazwa: o.kategoria_id || 'Bez kategorii', ikona: '❔', kolor: '#888' };
+  const w = whenLabel(o);
+  const ds = `data-plan="${esc(o.plan.id)}" data-date="${esc(o.date)}"`;
+  let act = '';
+  if (isPending(o)) act = `${full ? `<button class="mini" data-act="skip-occ" ${ds} title="Pomiń ten termin">Pomiń</button>` : ''}<button class="mini primary" data-act="pay-occ" ${ds}>Zapłać</button>`;
+  else if (o.status === 'skipped' && full) act = `<button class="mini" data-act="unskip-occ" ${ds}>Przywróć</button>`;
+  else if (o.status === 'paid') act = `<button class="mini ghost" data-act="edit-tx" data-id="${esc(o.tx.id)}" title="Pokaż płatność">✓</button>`;
+  return `
+    <div class="tx occ st-${o.status}${full && o.status !== 'paid' ? ' full' : ''}">
+      <span class="cat-ico" style="--c:${esc(c.kolor)}">${c.ikona}</span>
+      <button class="tx-main plain" data-act="edit-plan" data-id="${esc(o.plan.id)}">
+        <span class="tx-title">${esc(o.plan.nazwa || c.nazwa)}</span>
+        <span class="tx-meta"><span class="${w.cls}">${w.txt}</span> · ${esc(c.nazwa)}${isRecurring(o.plan) ? ` · ${cycleLabel(o.plan.cykl)}` : ''}</span>
+      </button>
+      <span class="tx-amt">${zl(o.amount)}</span>
+      <span class="occ-act">${act}</span>
+    </div>`;
+}
+
+function plannedCard(cm) {
+  const list = upcomingOccurrences();
+  if (!list.length) return '';
+  const total = round2(list.reduce((a, o) => a + o.amount, 0));
+  const shown = list.slice(0, 5);
+  return `
+    <section class="card">
+      <div class="card-head"><h2>Do zapłaty</h2><a href="#/planowane" class="small-link">Planowane</a></div>
+      <p class="muted small">Czeka ${zl(total)}. Płatności z tego okresu są już odjęte od kwoty „zostało”.</p>
+      <div class="tx-list">${shown.map((o) => occRow(o, cm)).join('')}</div>
+      ${list.length > shown.length ? `<a class="small-link" href="#/planowane">+ jeszcze ${list.length - shown.length}</a>` : ''}
+    </section>`;
+}
+
+function viewPlanowane() {
+  if (!state.hasData) return `<div class="empty">Wczytywanie danych…</div>`;
+  const key = period();
+  const sd = startDay();
+  const td = today();
+  const cm = catMap();
+  const occ = periodOccurrences(state.plans, state.transactions, key, sd, td);
+  const paid = round2(occ.filter((o) => o.status === 'paid').reduce((a, o) => a + o.tx.kwota, 0));
+  const pending = round2(occ.filter(isPending).reduce((a, o) => a + o.amount, 0));
+  const plans = activePlans(state.plans);
+  const ico = (p) => cm.get(p.kategoria_id) || { nazwa: p.kategoria_id || 'Bez kategorii', ikona: '❔', kolor: '#888' };
+
+  const rec = plans.filter(isRecurring)
+    .map((p) => ({ p, next: nextOccurrence(p, state.transactions, td), year: annualCost(p, td) }))
+    .sort((a, b) => (a.next ? 0 : 1) - (b.next ? 0 : 1) || (a.next?.date || '').localeCompare(b.next?.date || '') || b.year - a.year);
+  const curStart = periodRange(currentKey(), sd).start;
+  const once = plans.filter((p) => !isRecurring(p) && p.data >= curStart)
+    .map((p) => ({ p, o: occurrencesInRange([p], state.transactions, p.data, p.data, td)[0] }))
+    .filter((x) => x.o)
+    .sort((a, b) => a.p.data.localeCompare(b.p.data));
+  const yearTotal = round2(rec.reduce((a, x) => a + x.year, 0));
+
+  const planRow = (p, meta, right) => {
+    const c = ico(p);
+    return `
+      <button class="tx" data-act="edit-plan" data-id="${esc(p.id)}">
+        <span class="cat-ico" style="--c:${esc(c.kolor)}">${c.ikona}</span>
+        <span class="tx-main"><span class="tx-title">${esc(p.nazwa || c.nazwa)}</span><span class="tx-meta">${meta}</span></span>
+        <span class="plan-right">${right}</span>
+      </button>`;
+  };
+
+  return `
+    <div class="grid-dash">
+      <div class="col">
+        <button class="primary wide add-plan" data-act="add-plan">${icon('plus')}Dodaj planowany wydatek</button>
+        <section class="card">
+          <h2>Terminy w okresie ${periodLabel(key, sd).toLowerCase()}</h2>
+          ${occ.length ? `
+          <div class="plan-sum">
+            <div><small>Do zapłaty</small><b class="${pending ? '' : 't-ok'}">${zl(pending)}</b></div>
+            <div><small>Zapłacono</small><b>${zl(paid)}</b></div>
+          </div>
+          <div class="tx-list">${occ.map((o) => occRow(o, cm, true)).join('')}</div>
+          <p class="muted small">Niezapłacone terminy rezerwują pieniądze w limitach kategorii, więc pulpit pokazuje, ile naprawdę zostaje na resztę. „Zapłać” zapisuje wydatek powiązany z terminem, „Pomiń” — zwalnia rezerwację tylko dla tego terminu.</p>`
+            : `<p class="muted">Brak planowanych płatności w tym okresie.</p>
+          <p class="muted small">Dodaj opłaty, które się powtarzają (czynsz, abonamenty, ubezpieczenie), albo znane wydatki w przyszłości (przegląd auta, prezent, wakacje). Pojawią się na pulpicie jako planowane i od razu zmniejszą kwotę do wydania w swoim miesiącu.</p>`}
+        </section>
+      </div>
+      <div class="col">
+        <section class="card">
+          <div class="card-head"><h2>Cykliczne</h2><button class="small-link" data-act="add-plan" data-kind="cykl">+ Nowy</button></div>
+          ${rec.length ? `<div class="tx-list">${rec.map(({ p, next, year }) => planRow(
+            p,
+            `${cycleLabel(p.cykl)} · ${next ? `następny ${dateShort(next.date)}` : 'zakończony'}`,
+            `<b>${zl(p.kwota)}</b><small>${zl(year)} / rok</small>`,
+          )).join('')}</div>` : '<p class="muted">Brak. Np. czynsz, prąd, Netflix, przedszkole.</p>'}
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Jednorazowe</h2><button class="small-link" data-act="add-plan" data-kind="raz">+ Nowy</button></div>
+          ${once.length ? `<div class="tx-list">${once.map(({ p, o }) => {
+            const w = whenLabel(o);
+            return planRow(p, `<span class="${w.cls}">${w.txt}</span>`, `<b>${zl(p.kwota)}</b>`);
+          }).join('')}</div>` : '<p class="muted">Brak. Np. przegląd auta, prezent, wyjazd.</p>'}
+        </section>
+        ${rec.length ? `
+        <section class="card">
+          <h2>Zestawienie roczne</h2>
+          <p>Opłaty cykliczne w ciągu 12 miesięcy: <b>${zl(yearTotal)}</b> — średnio <b>${zl(round2(yearTotal / 12))}</b> miesięcznie.</p>
+          <div class="struct">${[...rec].sort((a, b) => b.year - a.year).map(({ p, year }) => `
+            <div class="st-row">
+              <span class="st-name">${ico(p).ikona} ${esc(p.nazwa || ico(p).nazwa)}</span>
+              <span class="st-bar"><i style="width:${yearTotal ? (year / yearTotal) * 100 : 0}%;background:${esc(ico(p).kolor || '#888')}"></i></span>
+              <span class="st-val">${zl(year)} <small>${pct(yearTotal ? year / yearTotal : 0)}</small></span>
+            </div>`).join('')}</div>
+        </section>` : ''}
+      </div>
+    </div>`;
 }
 
 // ───────────────────────── HISTORIA ─────────────────────────
@@ -499,6 +665,15 @@ function budgetDraftFor(key) {
   return ui.draft;
 }
 
+/** Suma planowanych płatności (bez pominiętych) w okresie, wg kategorii — do ustalania limitów. */
+function plannedForBudget(key) {
+  const m = new Map();
+  for (const o of periodOccurrences(state.plans, state.transactions, key, startDay(), today())) {
+    if (o.status !== 'skipped') m.set(o.kategoria_id, round2((m.get(o.kategoria_id) || 0) + o.amount));
+  }
+  return m;
+}
+
 function draftNumbers(d) {
   const n = (v) => {
     const x = parseAmount(v);
@@ -549,6 +724,7 @@ function viewBudzet() {
   const s = getSummary(key);
   const spentNow = new Map(s.cats.map((c) => [c.cat.id, c.spent]));
   const cats = state.categories.filter((c) => c.typ === 'wydatek' && (c.aktywna || d.limits[c.id]));
+  const plannedCat = plannedForBudget(key);
 
   return `
     <div class="grid-dash">
@@ -566,6 +742,7 @@ function viewBudzet() {
           <ul>
             <li>Zacznij od propozycji ze średniej i <b>obetnij 10–15%</b> w kategoriach „zachcianek”.</li>
             <li>Opłatom stałym też daj limit — wtedy „zostało” na pulpicie jest prawdziwe.</li>
+            <li>Wydatki z zakładki <b>Planowane</b> rezerwują limit swojej kategorii — limit powinien je pokryć.</li>
             <li>Cel oszczędności traktuj jak pierwszy rachunek do zapłacenia, nie resztę na koniec.</li>
           </ul>
         </section>
@@ -576,6 +753,7 @@ function viewBudzet() {
           <div class="btn-row">
             <button data-act="copy-prev">Skopiuj z ${periodShort(prevKey)}</button>
             <button data-act="suggest">Zaproponuj (śr. 3 mies.)</button>
+            ${plannedCat.size ? '<button data-act="plan-limits" title="Podnieś limity tam, gdzie nie pokrywają planowanych płatności">Pokryj planowane</button>' : ''}
           </div>
           <div class="limits">
             ${cats.map((c) => `
@@ -584,6 +762,7 @@ function viewBudzet() {
                 <span class="limit-main">
                   <span class="cat-name">${esc(c.nazwa)}${c.rodzaj === 'staly' ? ' <em>stały</em>' : ''}</span>
                   <small>${[
+                    plannedCat.get(c.id) ? `<span class="${(parseAmount(d.limits[c.id] || '') || 0) < plannedCat.get(c.id) ? 't-warn' : ''}">plan: ${zl(plannedCat.get(c.id))}</span>` : '',
                     prevSpent[c.id] ? `${periodShort(prevKey)}: ${zl(round2(prevSpent[c.id]))}` : '',
                     avg[c.id] ? `śr.: ${zl(avg[c.id])}` : '',
                     spentNow.get(c.id) ? `teraz: ${zl(spentNow.get(c.id))}` : '',
@@ -742,17 +921,17 @@ function viewUstawienia() {
     </div>`;
 }
 
-const VIEWS = { pulpit: viewPulpit, historia: viewHistoria, budzet: viewBudzet, raporty: viewRaporty, ustawienia: viewUstawienia };
+const VIEWS = { pulpit: viewPulpit, historia: viewHistoria, planowane: viewPlanowane, budzet: viewBudzet, raporty: viewRaporty, ustawienia: viewUstawienia };
 
 // ───────────────────────── FORMULARZ TRANSAKCJI ─────────────────────────
 
-function openForm(tx = null) {
+function openForm(tx = null, preset = {}) {
   const sd = startDay();
   const r = periodRange(period(), sd);
   const defDate = inRange(today(), r) ? today() : r.end; // przeglądając stary miesiąc, domyślnie jego ostatni dzień
   ui.form = tx
     ? { ...tx, kwotaStr: String(tx.kwota).replace('.', ','), isNew: false, potrzebaTouched: true }
-    : { id: store.newId(), typ: 'wydatek', kwotaStr: '', kategoria_id: '', potrzeba: 'niezbedny', data: defDate, opis: '', osoba: userName(), isNew: true, potrzebaTouched: false, usunieto: false };
+    : { id: store.newId(), typ: 'wydatek', kwotaStr: '', kategoria_id: '', potrzeba: 'niezbedny', data: defDate, opis: '', osoba: userName(), isNew: true, potrzebaTouched: false, usunieto: false, plan_id: '', plan_data: '', ...preset };
   renderModal();
   setTimeout(() => {
     const el = $('#f-amount');
@@ -763,15 +942,16 @@ function openForm(tx = null) {
 function closeModal() {
   ui.form = null;
   ui.catForm = null;
+  ui.planForm = null;
   renderModal();
 }
 
-function sortedCats(typ) {
+function sortedCats(typ, selected = ui.form?.kategoria_id) {
   const since = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
   const use = {};
   for (const t of state.transactions) if (!t.usunieto && t.data >= since) use[t.kategoria_id] = (use[t.kategoria_id] || 0) + 1;
   return state.categories
-    .filter((c) => c.typ === typ && (c.aktywna || c.id === ui.form?.kategoria_id))
+    .filter((c) => c.typ === typ && (c.aktywna || c.id === selected))
     .sort((a, b) => (use[b.id] || 0) - (use[a.id] || 0) || a.kolejnosc - b.kolejnosc);
 }
 
@@ -779,6 +959,7 @@ function renderModal() {
   const m = $('#modal');
   if (!m) return;
   if (ui.catForm) return renderCatModal(m);
+  if (ui.planForm) return renderPlanModal(m);
   const f = ui.form;
   if (!f) {
     m.innerHTML = '';
@@ -799,6 +980,7 @@ function renderModal() {
         <span>zł</span>
       </div>
       <div id="f-impact" class="impact"></div>
+      ${f.plan_id ? `<div class="plan-link">${icon('calendar')}<span>Płatność planowana: <b>${esc(state.plans.find((p) => p.id === f.plan_id)?.nazwa || '—')}</b> · termin ${dateShort(f.plan_data)}</span></div>` : ''}
       <div class="cat-grid">
         ${sortedCats(f.typ).map((c) => `
           <button class="cg ${f.kategoria_id === c.id ? 'on' : ''}" data-act="f-cat" data-id="${esc(c.id)}" style="--c:${esc(c.kolor)}">
@@ -828,7 +1010,7 @@ function updateImpact() {
   let danger = false;
   if (f.typ === 'wydatek') {
     const key = periodKeyFor(f.data || today(), startDay());
-    const s = getSummary(key, f.isNew ? null : f.id);
+    const s = getSummary(key, { excludeTxId: f.isNew ? null : f.id, excludeOcc: f.plan_id ? occKey(f.plan_id, f.plan_data) : null });
     const cat = catMap().get(f.kategoria_id);
     if (!f.kategoria_id) {
       html = s.totalLimit && s.state === 'current' ? `<span class="muted">Na dziś bezpiecznie: <b>${zl(s.dailySafe)}</b> · w okresie zostało ${zl(s.remaining)}</span>` : '<span class="muted">Wybierz kategorię</span>';
@@ -864,14 +1046,14 @@ function saveForm() {
   const tx = {
     id: f.id, data: f.data, kwota: amount, typ: f.typ, kategoria_id: f.kategoria_id, opis: (f.opis || '').trim(),
     potrzeba: f.typ === 'przychod' ? 'niezbedny' : f.potrzeba, osoba: f.osoba || userName(),
-    utworzono: f.utworzono || '', usunieto: false,
+    utworzono: f.utworzono || '', usunieto: false, plan_id: f.plan_id || '', plan_data: f.plan_data || '',
   };
   const isNew = f.isNew;
   store.saveTransaction(tx, isNew);
   closeModal();
   if (isNew) {
     const saved = state.transactions.find((t) => t.id === tx.id);
-    toast(`Zapisano ${zl(amount)}`, { label: 'Cofnij', fn: () => store.deleteTransaction(saved) });
+    toast(tx.plan_id ? `Zapłacono ${zl(amount)} — termin rozliczony` : `Zapisano ${zl(amount)}`, { label: 'Cofnij', fn: () => store.deleteTransaction(saved) });
   } else toast('Zapisano zmiany');
 }
 
@@ -884,6 +1066,131 @@ function shake(sel, msg) {
   }
   toast(msg);
 }
+
+// ───────────────────────── FORMULARZ WYDATKU PLANOWANEGO ─────────────────────────
+
+function openPlanForm(p = null, kind = 'cykl') {
+  ui.planForm = p
+    ? { ...p, kwotaStr: String(p.kwota).replace('.', ','), isNew: false, rodzaj: isRecurring(p) ? 'cykl' : 'raz', cyklSel: isRecurring(p) ? p.cykl : 'miesiac', potrzebaTouched: true }
+    : {
+      id: store.newId(), nazwa: '', kwotaStr: '', kategoria_id: '', potrzeba: 'niezbedny', rodzaj: kind, cyklSel: 'miesiac',
+      data: kind === 'raz' ? addDays(today(), 7) : today(), data_koniec: '', pominiete: '', osoba: userName(), isNew: true, potrzebaTouched: false, usunieto: false,
+    };
+  renderModal();
+  setTimeout(() => {
+    if (ui.planForm?.isNew) $('#p-amount')?.focus();
+  }, 60);
+}
+
+/** Plan zbudowany z formularza (bez walidacji) — do podglądu terminów i zapisu. */
+function planFromForm(f) {
+  return {
+    id: f.id, nazwa: (f.nazwa || '').trim(), kwota: parseAmount(f.kwotaStr), kategoria_id: f.kategoria_id, potrzeba: f.potrzeba,
+    cykl: f.rodzaj === 'cykl' ? f.cyklSel : 'jednorazowo', data: f.data, data_koniec: f.rodzaj === 'cykl' ? f.data_koniec || '' : '',
+    pominiete: f.pominiete || '', osoba: f.osoba || userName(), utworzono: f.utworzono || '', usunieto: false,
+  };
+}
+
+function renderPlanModal(m) {
+  const f = ui.planForm;
+  document.body.classList.add('modal-open');
+  const seg = (field, v, l) => `<button class="${f[field] === v ? 'on' : ''}" data-act="p-set" data-field="${field}" data-v="${v}">${l}</button>`;
+  const cyc = f.rodzaj === 'cykl';
+  m.innerHTML = `
+    <div class="overlay" data-act="close"></div>
+    <div class="sheet" role="dialog" aria-label="Wydatek planowany">
+      <div class="sheet-head">
+        <div class="seg">${seg('rodzaj', 'cykl', 'Cykliczny')}${seg('rodzaj', 'raz', 'Jednorazowy')}</div>
+        <button class="icon-btn" data-act="close" aria-label="Zamknij">${icon('close')}</button>
+      </div>
+      <div class="amount">
+        <input id="p-amount" inputmode="decimal" placeholder="0" value="${esc(f.kwotaStr)}" autocomplete="off" enterkeyhint="next">
+        <span>zł</span>
+      </div>
+      <input id="p-name" placeholder="${cyc ? 'Nazwa, np. Czynsz, Netflix, przedszkole' : 'Nazwa, np. Przegląd auta, prezent dla mamy'}" value="${esc(f.nazwa)}" autocomplete="off" maxlength="80">
+      <div class="cat-grid">
+        ${sortedCats('wydatek', f.kategoria_id).map((c) => `
+          <button class="cg ${f.kategoria_id === c.id ? 'on' : ''}" data-act="p-cat" data-id="${esc(c.id)}" style="--c:${esc(c.kolor)}">
+            <span>${c.ikona}</span><small>${esc(c.nazwa)}</small>
+          </button>`).join('')}
+      </div>
+      <div class="seg small">${seg('potrzeba', 'niezbedny', 'Niezbędny')}${seg('potrzeba', 'zachcianka', 'Zachcianka')}</div>
+      ${cyc ? `
+      <div class="row2 plan-dates">
+        <label class="field"><span>Powtarzaj</span>
+          <select id="p-cycle">${Object.entries(CYCLES).filter(([k]) => k !== 'jednorazowo').map(([k, c]) => `<option value="${k}" ${f.cyklSel === k ? 'selected' : ''}>${c.label}</option>`).join('')}</select></label>
+        <label class="field"><span>Pierwszy termin</span><input id="p-date" type="date" value="${esc(f.data)}"></label>
+      </div>
+      <label class="field"><span>Do kiedy (puste = bez końca)</span><input id="p-end" type="date" value="${esc(f.data_koniec)}"></label>`
+      : `<label class="field"><span>Termin płatności</span><input id="p-date" type="date" value="${esc(f.data)}"></label>`}
+      <div id="p-preview" class="impact"></div>
+      <div class="sheet-foot">
+        ${f.isNew ? '' : `<button class="danger-outline" data-act="p-delete">Usuń</button>`}
+        <button class="primary" data-act="p-save">${f.isNew ? 'Dodaj do planu' : 'Zapisz'}</button>
+      </div>
+    </div>`;
+  updatePlanPreview();
+}
+
+function updatePlanPreview() {
+  const f = ui.planForm;
+  const el = $('#p-preview');
+  if (!f || !el) return;
+  const p = planFromForm(f);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data || '')) {
+    el.innerHTML = '<span class="muted">Podaj termin</span>';
+    return;
+  }
+  const td = today();
+  const from = p.data > td ? p.data : td;
+  const next = occurrencesBetween(p, from, addDays(from, 800)).slice(0, 3);
+  const lines = [];
+  if (isRecurring(p)) {
+    lines.push(next.length ? `<span class="muted">Najbliższe terminy: <b>${next.map(dateShort).join(', ')}</b>${Number.isFinite(p.kwota) && p.kwota > 0 ? ` · rocznie ${zl(annualCost(p, td))}` : ''}</span>` : '<span class="t-warn">Brak terminów od dziś — sprawdź daty.</span>');
+  } else if (p.data < td) {
+    lines.push('<span class="t-warn">Termin już minął — taki wydatek lepiej dodać zwykłym „+”.</span>');
+  }
+  const amount = Number.isFinite(p.kwota) ? p.kwota : 0;
+  const first = next[0];
+  if (first && p.kategoria_id && amount > 0) {
+    const key = periodKeyFor(first, startDay());
+    const s = getSummary(key, { excludePlanId: p.id });
+    const inPeriod = round2(occurrencesBetween(p, periodRange(key, startDay()).start, periodRange(key, startDay()).end).filter((d) => d >= td).length * amount);
+    const im = impactOf(s, p.kategoria_id, inPeriod);
+    const cat = catMap().get(p.kategoria_id);
+    const lab = periodLabel(key, startDay()).toLowerCase();
+    if (im.overCat) lines.push(`<span class="t-over">⚠ W okresie ${lab} limit „${esc(cat?.nazwa)}” zostanie przekroczony o <b>${zl(-im.catRemainingAfter)}</b></span>`);
+    else if (im.hasLimit) lines.push(`<span class="t-ok">✓ ${lab}: w limicie „${esc(cat?.nazwa)}” zostanie <b>${zl(im.catRemainingAfter)}</b> z ${zl(im.limit)}</span>`);
+    else lines.push(`<span class="t-warn">„${esc(cat?.nazwa)}” nie ma limitu w okresie ${lab}${s.totalLimit ? ` · w budżecie zostanie ${zl(im.totalRemainingAfter)}` : ''}</span>`);
+  }
+  el.innerHTML = lines.join('<br>');
+}
+
+function savePlanForm() {
+  const f = ui.planForm;
+  const p = planFromForm(f);
+  if (!Number.isFinite(p.kwota) || p.kwota <= 0) return shake('#p-amount', 'Wpisz kwotę');
+  if (!p.kategoria_id) return shake('.cat-grid', 'Wybierz kategorię');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data || '')) return shake('#p-date', 'Podaj termin');
+  if (p.data_koniec && p.data_koniec < p.data) return shake('#p-end', 'Data końca jest przed pierwszym terminem');
+  if (!p.nazwa) p.nazwa = catMap().get(p.kategoria_id)?.nazwa || 'Wydatek planowany';
+  const isNew = f.isNew;
+  store.savePlan(p, isNew);
+  closeModal();
+  toast(isNew ? `Dodano do planu: ${p.nazwa}` : 'Zapisano zmiany');
+}
+
+function syncPlanInputs() {
+  const f = ui.planForm;
+  if (!f) return;
+  const map = { 'p-amount': 'kwotaStr', 'p-name': 'nazwa', 'p-cycle': 'cyklSel', 'p-date': 'data', 'p-end': 'data_koniec' };
+  for (const [id, field] of Object.entries(map)) {
+    const el = $(`#${id}`);
+    if (el) f[field] = el.value;
+  }
+}
+
+const plural = (n, one, few, many) => (n === 1 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
 
 // ───────────────────────── FORMULARZ KATEGORII ─────────────────────────
 
@@ -1164,6 +1471,72 @@ const ACTIONS = {
     renderModal();
   },
   'c-save': () => saveCatForm(),
+  // planowane
+  'add-plan': (el) => openPlanForm(null, el.dataset.kind || 'cykl'),
+  'edit-plan': (el) => {
+    const p = state.plans.find((x) => x.id === el.dataset.id);
+    if (p) openPlanForm(p);
+  },
+  'p-set': (el) => {
+    const f = ui.planForm;
+    syncPlanInputs();
+    f[el.dataset.field] = el.dataset.v;
+    if (el.dataset.field === 'potrzeba') f.potrzebaTouched = true;
+    renderModal();
+  },
+  'p-cat': (el) => {
+    const f = ui.planForm;
+    syncPlanInputs();
+    f.kategoria_id = el.dataset.id;
+    if (!f.potrzebaTouched) f.potrzeba = catMap().get(f.kategoria_id)?.domyslna_potrzeba || 'niezbedny';
+    renderModal();
+  },
+  'p-save': () => {
+    syncPlanInputs();
+    savePlanForm();
+  },
+  'p-delete': () => {
+    const p = state.plans.find((x) => x.id === ui.planForm.id);
+    closeModal();
+    if (!p) return;
+    store.deletePlan(p);
+    toast('Usunięto z planu', { label: 'Cofnij', fn: () => store.restorePlan(p) });
+  },
+  'pay-occ': (el) => {
+    const p = state.plans.find((x) => x.id === el.dataset.plan);
+    if (!p) return;
+    const due = el.dataset.date;
+    const td = today();
+    openForm(null, {
+      kwotaStr: String(p.kwota).replace('.', ','), kategoria_id: p.kategoria_id, potrzeba: p.potrzeba, potrzebaTouched: true,
+      opis: p.nazwa, data: due <= td ? due : td, plan_id: p.id, plan_data: due,
+    });
+  },
+  'skip-occ': (el) => {
+    const p = state.plans.find((x) => x.id === el.dataset.plan);
+    if (!p) return;
+    store.savePlan(withSkip(p, el.dataset.date, true), false);
+    toast(`Pominięto termin ${dateShort(el.dataset.date)}`, { label: 'Cofnij', fn: () => store.savePlan(withSkip(state.plans.find((x) => x.id === p.id), el.dataset.date, false), false) });
+  },
+  'unskip-occ': (el) => {
+    const p = state.plans.find((x) => x.id === el.dataset.plan);
+    if (p) store.savePlan(withSkip(p, el.dataset.date, false), false);
+  },
+  'plan-limits': () => {
+    const d = budgetDraftFor(period());
+    let changed = 0;
+    for (const [cid, v] of plannedForBudget(period())) {
+      const cur = parseAmount(d.limits[cid] || '') || 0;
+      if (cur < v) {
+        d.limits[cid] = String(Math.ceil(v));
+        changed++;
+      }
+    }
+    if (!changed) return toast('Limity już pokrywają planowane wydatki');
+    d.dirty = true;
+    renderApp();
+    toast(`Podniesiono ${changed} ${plural(changed, 'limit', 'limity', 'limitów')} — sprawdź i zapisz`);
+  },
 };
 
 function syncFormInputs() {
@@ -1188,6 +1561,11 @@ root.addEventListener('click', (e) => {
 
 root.addEventListener('input', (e) => {
   const t = e.target;
+  if (ui.planForm && ['p-amount', 'p-name', 'p-cycle', 'p-date', 'p-end'].includes(t.id)) {
+    syncPlanInputs();
+    if (t.id !== 'p-name') updatePlanPreview();
+    return;
+  }
   if (ui.form && ['f-amount', 'f-date', 'f-desc'].includes(t.id)) {
     syncFormInputs();
     if (t.id !== 'f-desc') updateImpact();
@@ -1231,7 +1609,13 @@ root.addEventListener('keydown', (e) => {
     }
     ACTIONS['f-save']();
   }
-  if (e.key === 'Escape' && (ui.form || ui.catForm)) closeModal();
+  if (e.key === 'Enter' && ui.planForm && ['p-amount', 'p-name'].includes(e.target.id)) {
+    e.preventDefault();
+    if (e.target.id === 'p-amount') return $('#p-name')?.focus();
+    e.target.blur();
+    if (ui.planForm.kategoria_id) ACTIONS['p-save']();
+  }
+  if (e.key === 'Escape' && (ui.form || ui.catForm || ui.planForm)) closeModal();
 });
 
 // Po wyjściu z pola w widoku budżetu dorysuj zaległe zmiany (np. dane od drugiej osoby).

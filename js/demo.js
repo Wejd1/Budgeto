@@ -3,9 +3,10 @@
 import { SCHEMA_VERSION, keyOf } from './schema.js';
 import { SEED_CATEGORIES } from './seed.js';
 import { todayStr, shiftPeriod, toDateStr, parseDate } from './budget.js';
+import { addDays, addMonthsClamped } from './planned.js';
 
-const LS = 'bud.demo';
-const SHEET_KEYS = { Transakcje: 'transactions', Kategorie: 'categories', Budzety: 'budgets', Okresy: 'periods' };
+const LS = 'bud.demo.v2'; // v2: dane z wydatkami planowanymi
+const SHEET_KEYS = { Transakcje: 'transactions', Kategorie: 'categories', Budzety: 'budgets', Okresy: 'periods', Planowane: 'plans' };
 
 function rand(seed) {
   let s = seed;
@@ -30,10 +31,11 @@ function generate() {
     const [y, m] = key.split('-').map(Number);
     const last = p === 0 ? Number(today.slice(8, 10)) : new Date(Date.UTC(y, m, 0)).getUTCDate();
     const date = (d) => toDateStr(Date.UTC(y, m - 1, Math.min(d, last)));
-    const add = (d, kwota, kategoria_id, potrzeba, opis = '') =>
-      tx.push({ id: `demo-${++n}`, data: date(d), kwota: Math.round(kwota * 100) / 100, typ: kategoria_id.startsWith('wyn') || kategoria_id === 'inne_przychody' ? 'przychod' : 'wydatek', kategoria_id, opis, potrzeba, osoba: people[n % 2], utworzono: '', zmodyfikowano: '', usunieto: false });
-    add(1, 2300, 'mieszkanie', 'niezbedny', 'Czynsz + media');
-    add(3, 129, 'abonamenty', 'zachcianka', 'Netflix, Spotify, telefon');
+    const add = (d, kwota, kategoria_id, potrzeba, opis = '', extra = {}) =>
+      tx.push({ id: `demo-${++n}`, data: date(d), kwota: Math.round(kwota * 100) / 100, typ: kategoria_id.startsWith('wyn') || kategoria_id === 'inne_przychody' ? 'przychod' : 'wydatek', kategoria_id, opis, potrzeba, osoba: people[n % 2], utworzono: '', zmodyfikowano: '', usunieto: false, plan_id: '', plan_data: '', ...extra });
+    const due = (d) => toDateStr(Date.UTC(y, m - 1, d));
+    add(1, 2300, 'mieszkanie', 'niezbedny', 'Czynsz + media', { plan_id: 'demo-plan-czynsz', plan_data: due(1) });
+    add(3, 129, 'abonamenty', 'zachcianka', 'Netflix, Spotify, telefon', { plan_id: 'demo-plan-abon', plan_data: due(3) });
     add(10, 6800, 'wynagrodzenie', 'niezbedny', 'Pensja');
     add(10, 3200, 'wynagrodzenie', 'niezbedny', 'Pensja');
     const scale = p === 0 ? 1.12 : 1; // w bieżącym miesiącu trochę „za szybko” — żeby było co pokazać
@@ -49,11 +51,23 @@ function generate() {
     periods.push({ okres: key, przychody_plan: 10000, cel_oszczednosci: 2000 });
   }
   tx.sort((a, b) => parseDate(a.data) - parseDate(b.data));
+  const first = `${shiftPeriod(cur, -3)}-01`;
+  const mkPlan = (id, nazwa, kwota, kategoria_id, potrzeba, cykl, data) =>
+    ({ id: `demo-plan-${id}`, nazwa, kwota, kategoria_id, potrzeba, cykl, data, data_koniec: '', pominiete: '', osoba: 'Damian', utworzono: '', zmodyfikowano: '', usunieto: false });
+  const plans = [
+    mkPlan('czynsz', 'Czynsz + media', 2300, 'mieszkanie', 'niezbedny', 'miesiac', first),
+    mkPlan('abon', 'Netflix, Spotify, telefon', 129, 'abonamenty', 'zachcianka', 'miesiac', `${shiftPeriod(cur, -3)}-03`),
+    mkPlan('silownia', 'Karnet na siłownię', 99, 'rozrywka', 'zachcianka', 'miesiac', `${cur}-20`),
+    mkPlan('oc', 'OC i AC samochodu', 1450, 'transport', 'niezbedny', 'rok', addMonthsClamped(`${cur}-15`, 1)),
+    mkPlan('przeglad', 'Przegląd auta', 450, 'transport', 'niezbedny', 'jednorazowo', addMonthsClamped(`${cur}-08`, 1)),
+    mkPlan('prezent', 'Prezent urodzinowy dla mamy', 200, 'prezenty', 'zachcianka', 'jednorazowo', addDays(today, 4)),
+  ];
   return {
     transactions: tx,
     categories: SEED_CATEGORIES.map((c) => ({ ...c })),
     budgets,
     periods,
+    plans,
     meta: { wersja_schematu: SCHEMA_VERSION, dzien_startu_okresu: 1 },
   };
 }
@@ -96,5 +110,6 @@ export class DemoBackend {
 
   static reset() {
     localStorage.removeItem(LS);
+    localStorage.removeItem('bud.demo');
   }
 }

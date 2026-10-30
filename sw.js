@@ -1,6 +1,6 @@
 // Service worker: aplikacja otwiera się bez internetu. Dane z Google NIE są tu cache'owane
 // (trzyma je aplikacja w localStorage). Po zmianie plików podbij VERSION.
-const VERSION = 'budzet-v1.0.0';
+const VERSION = 'budzet-v1.1.0';
 const ASSETS = [
   './',
   'index.html',
@@ -12,6 +12,7 @@ const ASSETS = [
   'js/config.js',
   'js/demo.js',
   'js/format.js',
+  'js/planned.js',
   'js/schema.js',
   'js/seed.js',
   'js/sheets.js',

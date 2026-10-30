@@ -90,7 +90,31 @@ export class SheetsBackend {
     this.id = spreadsheetId;
   }
 
+  /**
+   * Arkusz założony starszą wersją aplikacji nie ma nowych zakładek/kolumn — dokładamy je raz na sesję.
+   * Istniejące dane zostają nietknięte; dopisujemy tylko brakujące zakładki i nagłówki.
+   */
+  async ensureSchema() {
+    if (this.schemaChecked) return;
+    const info = await call('GET', `${API}/${this.id}?fields=sheets.properties.title`);
+    const have = new Set((info.sheets || []).map((s) => s.properties.title));
+    if (!have.has('Meta')) return; // nie nasz arkusz — loadAll zgłosi czytelny błąd
+    const missing = Object.keys(SCHEMA).filter((t) => !have.has(t));
+    if (missing.length) {
+      await call('POST', `${API}/${this.id}:batchUpdate`, {
+        requests: missing.map((title) => ({ addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } } })),
+      });
+      await call('POST', `${API}/${this.id}/values:batchUpdate`, {
+        valueInputOption: 'RAW',
+        data: Object.entries(SCHEMA).map(([t, cols]) => ({ range: `${t}!A1`, values: [cols] })),
+      });
+      await this.upsertMany('Meta', [{ klucz: 'wersja_schematu', wartosc: SCHEMA_VERSION }]);
+    }
+    this.schemaChecked = true;
+  }
+
   async loadAll() {
+    await this.ensureSchema();
     const qs = Object.keys(SCHEMA)
       .map((t) => `ranges=${encodeURIComponent(`${t}!A2:${colLetter(SCHEMA[t].length)}`)}`)
       .join('&');

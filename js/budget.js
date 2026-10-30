@@ -91,7 +91,7 @@ export function timeInPeriod(range, today) {
  * Kwota „zostało” liczona jest uczciwie: suma limitów minus WSZYSTKIE wydatki,
  * także te z kategorii bez limitu.
  */
-export function summarize({ transactions, budgets, periods = [], categories, key, startDay = 1, today }) {
+export function summarize({ transactions, budgets, periods = [], categories, key, startDay = 1, today, planned = [] }) {
   const range = periodRange(key, startDay);
   const time = timeInPeriod(range, today);
   const tx = txInPeriod(transactions, key, startDay);
@@ -106,42 +106,58 @@ export function summarize({ transactions, budgets, periods = [], categories, key
   const spentByCat = new Map();
   for (const t of exp) spentByCat.set(t.kategoria_id, round2((spentByCat.get(t.kategoria_id) || 0) + t.kwota));
 
+  // Zaplanowane, jeszcze niezapłacone terminy w tym okresie (z js/planned.js) — rezerwują limity.
+  const plannedByCat = new Map();
+  for (const o of planned) plannedByCat.set(o.kategoria_id, round2((plannedByCat.get(o.kategoria_id) || 0) + (Number(o.amount) || 0)));
+  const plannedTotal = sum(planned, (o) => o.amount);
+
   const spent = sum(exp);
   const income = sum(inc);
   const per = periods.find((p) => p.okres === key) || {};
   const incomePlan = Number(per.przychody_plan) || 0;
   const savingsGoal = Number(per.cel_oszczednosci) || 0;
 
-  const remaining = round2(totalLimit - spent);
+  const remaining = round2(totalLimit - spent - plannedTotal);
   const dailySafe = time.daysLeft > 0 ? round2(Math.max(0, remaining) / time.daysLeft) : 0;
 
-  // Prognoza: kategorie stałe (czynsz, abonamenty) liczymy jako max(wydano, limit),
-  // zmienne — liniowo wg dotychczasowego tempa.
+  // Prognoza: kategorie stałe (czynsz, abonamenty) liczymy jako max(wydano + zaplanowano, limit),
+  // płatności z planu (zapłacone i czekające) — w całości, a resztę wydatków zmiennych — liniowo wg tempa.
   let forecast = null;
   if (time.daysElapsed > 0) {
     let fixed = 0;
+    let lumps = 0;
     let variable = 0;
     const fixedCats = new Set();
     for (const [cid, s] of spentByCat) {
       const c = catById.get(cid);
       if (c && c.rodzaj === 'staly') {
-        fixed += Math.max(s, limits.get(cid) || 0);
+        fixed += Math.max(s + (plannedByCat.get(cid) || 0), limits.get(cid) || 0);
         fixedCats.add(cid);
-      } else variable += s;
+      }
     }
     for (const [cid, l] of limits) {
       const c = catById.get(cid);
-      if (c && c.rodzaj === 'staly' && !fixedCats.has(cid)) fixed += l;
+      if (c && c.rodzaj === 'staly' && !fixedCats.has(cid)) {
+        fixed += Math.max(l, plannedByCat.get(cid) || 0);
+        fixedCats.add(cid);
+      }
     }
-    forecast = round2(fixed + (time.state === 'past' ? variable : (variable / time.daysElapsed) * range.days));
+    for (const [cid, p] of plannedByCat) if (!fixedCats.has(cid)) lumps += p;
+    for (const t of exp) {
+      if (fixedCats.has(t.kategoria_id)) continue;
+      if (t.plan_id) lumps += t.kwota;
+      else variable += t.kwota;
+    }
+    forecast = round2(fixed + lumps + (time.state === 'past' ? variable : (variable / time.daysElapsed) * range.days));
   }
 
-  const ids = new Set([...limits.keys(), ...spentByCat.keys()]);
+  const ids = new Set([...limits.keys(), ...spentByCat.keys(), ...plannedByCat.keys()]);
   const cats = [...ids].map((id) => {
     const cat = catById.get(id) || { id, nazwa: id || 'Bez kategorii', ikona: '❔', rodzaj: 'zmienny' };
     const limit = limits.get(id) || 0;
     const s = spentByCat.get(id) || 0;
-    let status = statusFor(s, limit);
+    const plannedCat = plannedByCat.get(id) || 0;
+    let status = statusFor(round2(s + plannedCat), limit);
     // Opłata stała zapłacona w całości to norma, nie ostrzeżenie.
     if (cat.rodzaj === 'staly' && status === 'warn') status = 'ok';
     const pct = limit ? s / limit : null;
@@ -151,11 +167,15 @@ export function summarize({ transactions, budgets, periods = [], categories, key
       limit > 0 &&
       status !== 'over' &&
       pct > time.elapsedFrac + 0.1;
-    return { cat, limit, spent: s, remaining: round2(limit - s), pct, status, paceWarn };
+    return {
+      cat, limit, spent: s, planned: plannedCat, remaining: round2(limit - s - plannedCat), pct,
+      plannedPct: limit ? plannedCat / limit : null, status, paceWarn,
+      overByPlan: status === 'over' && s <= limit + 0.004,
+    };
   });
   const order = { over: 0, nolimit: 1, warn: 2, ok: 3, none: 4 };
   const fixedLast = (c) => (c.cat.rodzaj === 'staly' ? 1 : 0);
-  cats.sort((a, b) => order[a.status] - order[b.status] || fixedLast(a) - fixedLast(b) || (b.pct ?? 0) - (a.pct ?? 0) || b.spent - a.spent);
+  cats.sort((a, b) => order[a.status] - order[b.status] || fixedLast(a) - fixedLast(b) || ((b.pct ?? 0) + (b.plannedPct ?? 0)) - ((a.pct ?? 0) + (a.plannedPct ?? 0)) || b.spent - a.spent);
 
   const wants = sum(exp.filter((t) => t.potrzeba === 'zachcianka'));
   const byPerson = {};
@@ -170,11 +190,14 @@ export function summarize({ transactions, budgets, periods = [], categories, key
     income,
     incomePlan,
     savingsGoal,
+    planned: plannedTotal,
     remaining,
     dailySafe,
     forecast,
     spentFrac: totalLimit ? spent / totalLimit : null,
+    plannedFrac: totalLimit ? plannedTotal / totalLimit : null,
     unbudgetedSpent: round2([...spentByCat].filter(([id]) => !limits.has(id)).reduce((a, [, v]) => a + v, 0)),
+    unbudgetedPlanned: round2([...plannedByCat].filter(([id]) => !limits.has(id)).reduce((a, [, v]) => a + v, 0)),
     wants,
     needs: round2(spent - wants),
     byPerson,
@@ -188,12 +211,13 @@ export function impactOf(summary, categoryId, amount) {
   const a = Number(amount) || 0;
   const c = summary.cats.find((x) => x.cat.id === categoryId);
   const limit = summary.limits.get(categoryId) || 0;
-  const spent = c ? c.spent : 0;
-  const catRemainingAfter = round2(limit - spent - a);
+  const catRemainingAfter = round2((c ? c.remaining : limit) - a); // uwzględnia zaplanowane płatności
+  const planned = c ? c.planned : 0;
   const totalRemainingAfter = round2(summary.remaining - a);
   return {
     hasLimit: limit > 0,
     limit,
+    planned,
     catRemainingAfter,
     totalRemainingAfter,
     overCat: limit > 0 && catRemainingAfter < 0,
