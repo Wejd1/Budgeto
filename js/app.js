@@ -15,7 +15,7 @@ import {
   withSkip, nextOccurrence, annualCost, activePlans, addDays, daysUntil,
 } from './planned.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const root = document.getElementById('app');
 const PLACEHOLDER = GOOGLE_CLIENT_ID.startsWith('WKLEJ');
 
@@ -400,10 +400,6 @@ function viewPulpit() {
   if (s.totalLimit && s.unbudgetedSpent + s.unbudgetedPlanned > 0) {
     alerts.push(`<div class="alert s-warn">Wydatki${s.unbudgetedPlanned ? ' (i planowane)' : ''} bez limitu: <b>${zl(s.unbudgetedSpent + s.unbudgetedPlanned)}</b> — też zmniejszają kwotę „zostało”. <a href="#/budzet">Dodaj limity</a></div>`);
   }
-  const overdue = s.state === 'current' ? pendingPlanned(period()).filter((o) => o.status === 'overdue') : [];
-  if (overdue.length) {
-    alerts.unshift(`<div class="alert s-over">${overdue.length === 1 ? `Płatność „${esc(overdue[0].plan.nazwa)}” jest po terminie` : `${overdue.length} planowane płatności są po terminie`} (${zl(overdue.reduce((a, o) => a + o.amount, 0))}). <a href="#/planowane">Zobacz</a></div>`);
-  }
 
   const rows = s.cats.map((c) => {
     let rest;
@@ -431,8 +427,8 @@ function viewPulpit() {
       <div class="col">
         ${hero}
         ${tiles}
-        ${alerts.length ? `<div class="alerts">${alerts.join('')}</div>` : ''}
         ${plannedCard(cm)}
+        ${alerts.length ? `<div class="alerts">${alerts.join('')}</div>` : ''}
       </div>
       <div class="col">
         <section class="card">
@@ -464,16 +460,22 @@ function txRow(t, cm, showDate = true) {
 
 // ───────────────────────── PLANOWANE ─────────────────────────
 
-/** Terminy do zapłaty: niezapłacone w okresie + (dla bieżącego okresu) przypomnienia na 3 dni naprzód. */
+/**
+ * Pulpit: zaległe płatności + 3 najbliższe nadchodzące (także z kolejnych miesięcy).
+ * Przy przeglądaniu innego okresu: niezapłacone terminy z tego okresu.
+ */
+const UPCOMING_COUNT = 3;
+
 function upcomingOccurrences() {
   const key = period();
   const td = today();
-  const list = periodOccurrences(state.plans, state.transactions, key, startDay(), td).filter(isPending);
-  if (key === currentKey()) {
-    const r = periodRange(key, startDay());
-    list.push(...occurrencesInRange(state.plans, state.transactions, addDays(r.end, 1), addDays(td, 3), td).filter(isPending));
+  if (key !== currentKey()) {
+    return { overdue: [], next: periodOccurrences(state.plans, state.transactions, key, startDay(), td).filter(isPending), more: 0 };
   }
-  return list;
+  const r = periodRange(key, startDay());
+  const overdue = occurrencesInRange(state.plans, state.transactions, r.start, addDays(td, -1), td).filter((o) => o.status === 'overdue');
+  const ahead = occurrencesInRange(state.plans, state.transactions, td, addDays(td, 400), td).filter(isPending);
+  return { overdue, next: ahead.slice(0, UPCOMING_COUNT), more: Math.max(0, ahead.length - UPCOMING_COUNT) };
 }
 
 function whenLabel(o) {
@@ -508,16 +510,28 @@ function occRow(o, cm, full = false) {
 }
 
 function plannedCard(cm) {
-  const list = upcomingOccurrences();
-  if (!list.length) return '';
-  const total = round2(list.reduce((a, o) => a + o.amount, 0));
-  const shown = list.slice(0, 5);
+  const isCur = period() === currentKey();
+  const { overdue, next } = upcomingOccurrences();
+  if (!activePlans(state.plans).length) {
+    return isCur ? `
+      <section class="card">
+        <div class="card-head"><h2>Najbliższe płatności</h2></div>
+        <p class="muted small">Dodaj czynsz, abonamenty i znane przyszłe wydatki — zobaczysz tu, co i kiedy trzeba zapłacić.</p>
+        <button class="wide" data-act="add-plan">${icon('plus')}Dodaj planowany wydatek</button>
+      </section>` : '';
+  }
+  if (!overdue.length && !next.length) return '';
+  const r = periodRange(period(), startDay());
+  const pendingThisPeriod = round2(periodOccurrences(state.plans, state.transactions, period(), startDay(), today()).filter(isPending).reduce((a, o) => a + o.amount, 0));
+  const later = isCur ? next.filter((o) => o.date > r.end) : [];
   return `
     <section class="card">
-      <div class="card-head"><h2>Do zapłaty</h2><a href="#/planowane" class="small-link">Planowane</a></div>
-      <p class="muted small">Czeka ${zl(total)}. Płatności z tego okresu są już odjęte od kwoty „zostało”.</p>
-      <div class="tx-list">${shown.map((o) => occRow(o, cm)).join('')}</div>
-      ${list.length > shown.length ? `<a class="small-link" href="#/planowane">+ jeszcze ${list.length - shown.length}</a>` : ''}
+      <div class="card-head"><h2>${isCur ? 'Najbliższe płatności' : 'Do zapłaty w tym okresie'}</h2><a href="#/planowane" class="small-link">Wszystkie</a></div>
+      ${overdue.length ? `<div class="tx-list">${overdue.map((o) => occRow(o, cm)).join('')}</div>` : ''}
+      <div class="tx-list">${next.map((o) => occRow(o, cm)).join('')}</div>
+      <p class="muted small up-foot">${pendingThisPeriod
+        ? `Do zapłaty w tym okresie: <b>${zl(pendingThisPeriod)}</b> — już odjęte od kwoty „zostało”.`
+        : 'W tym okresie wszystko zapłacone.'}${later.length ? ` Płatności z kolejnego okresu wliczą się do jego budżetu.` : ''}</p>
     </section>`;
 }
 
